@@ -1,0 +1,71 @@
+rules_version = '2';
+
+// ============================================================
+// Deploy with: firebase deploy --only firestore:rules
+// (after running `firebase init` and selecting this project)
+// ============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && role() == "admin";
+    }
+
+    function isEvaluator() {
+      return isSignedIn() && role() == "evaluator";
+    }
+
+    // ---------------- users ----------------
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      // Only admins can change someone's role after creation.
+      allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+    }
+
+    // ---------------- announcements ----------------
+    match /announcements/{id} {
+      allow read: if true; // public, even logged-out visitors can see announcements
+      allow write: if isAdmin();
+    }
+
+    // ---------------- teams ----------------
+    match /teams/{teamId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.createdBy == request.auth.uid;
+      // Students can only edit their own team's uploads; round1Status only by admin.
+      allow update: if isSignedIn() && (
+        resource.data.createdBy == request.auth.uid || isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // ---------------- scores ----------------
+    match /scores/{id} {
+      allow read: if isSignedIn();
+      allow create: if isEvaluator() && request.resource.data.evaluatorId == request.auth.uid;
+      allow update, delete: if isEvaluator() && resource.data.evaluatorId == request.auth.uid;
+    }
+
+    // ---------------- eventConfig ----------------
+    match /eventConfig/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ---------------- seating ----------------
+    match /seating/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
