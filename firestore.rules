@@ -50,11 +50,21 @@ service cloud.firestore {
     match /teams/{teamId} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.createdBy == request.auth.uid;
-      // Students can only edit their own team's uploads; round1Status only by admin.
-      allow update: if isSignedIn() && (
-        resource.data.createdBy == request.auth.uid || isAdmin()
+      // Admins can update anything. The student who created the team can ONLY
+      // update their upload URLs — not round1Status, definition, or evaluator
+      // assignments, even by calling Firestore directly.
+      allow update: if isAdmin() || (
+        isSignedIn() &&
+        resource.data.createdBy == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(["pptUrl", "docUrl"])
       );
       allow delete: if isAdmin();
+    }
+
+    // ---------------- definitions ----------------
+    match /definitions/{id} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     // ---------------- scores ----------------

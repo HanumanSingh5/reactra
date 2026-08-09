@@ -25,6 +25,16 @@ export interface Team {
   pptUrl?: string;
   docUrl?: string;
   assignedEvaluatorIds?: string[]; // uids of evaluators the admin assigned to judge this team
+  definitionId?: string; // id of the definitions/{id} doc assigned to this team
+  definitionText?: string; // denormalized copy, so the team page can show it without an extra read
+  createdAt: number;
+}
+
+export interface Definition {
+  id: string;
+  text: string;
+  assignedTeamId?: string | null;
+  assignedTeamName?: string | null;
   createdAt: number;
 }
 

@@ -228,6 +228,18 @@ function TeamPageContent() {
       </section>
 
       <section className="bg-card border border-border rounded-lg p-5">
+        <h2 className="font-semibold mb-3">Project definition</h2>
+        {team.definitionText ? (
+          <p className="text-sm leading-relaxed">{team.definitionText}</p>
+        ) : (
+          <p className="text-sm text-muted italic">
+            Not assigned yet. Check back once the admin has assigned your team a
+            project definition.
+          </p>
+        )}
+      </section>
+
+      <section className="bg-card border border-border rounded-lg p-5">
         <h2 className="font-semibold mb-3">Round status</h2>
         <div className="flex items-center gap-4 mb-2">
           <span className="text-sm text-muted w-20">Round 1</span>
