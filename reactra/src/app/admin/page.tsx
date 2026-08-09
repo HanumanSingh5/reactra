@@ -822,6 +822,7 @@ function DefinitionsTab() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [uploading, setUploading] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -921,8 +922,8 @@ function DefinitionsTab() {
         });
         batch.update(doc(db, "teams", team.id), {
           definitionId: def.id,
-          definitionTitle: def.title,
-          definitionDescription: def.description,
+          definitionTitle: def.title ?? "",
+          definitionDescription: def.description ?? "",
         });
       }
       await batch.commit();
@@ -963,8 +964,8 @@ function DefinitionsTab() {
         });
         batch.update(doc(db, "teams", newTeamId), {
           definitionId: def.id,
-          definitionTitle: def.title,
-          definitionDescription: def.description,
+          definitionTitle: def.title ?? "",
+          definitionDescription: def.description ?? "",
         });
       } else {
         batch.update(doc(db, "definitions", def.id), {
@@ -982,6 +983,29 @@ function DefinitionsTab() {
   async function handleDelete(def: Definition) {
     if (def.assignedTeamId) return; // safety: don't delete one that's in use
     await deleteDoc(doc(db, "definitions", def.id));
+  }
+
+  async function handleClearAllUnassigned() {
+    if (unassignedDefinitions.length === 0) return;
+    const ok = window.confirm(
+      `Delete all ${unassignedDefinitions.length} unassigned definition(s)? ` +
+        `Definitions already assigned to a team are left untouched. This can't be undone.`
+    );
+    if (!ok) return;
+
+    setClearing(true);
+    setError("");
+    try {
+      const batch = writeBatch(db);
+      for (const def of unassignedDefinitions) {
+        batch.delete(doc(db, "definitions", def.id));
+      }
+      await batch.commit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear definitions.");
+    } finally {
+      setClearing(false);
+    }
   }
 
   return (
@@ -1014,13 +1038,22 @@ function DefinitionsTab() {
           {unassignedDefinitions.length} unassigned definition(s) &middot;{" "}
           {unassignedTeams.length} team(s) without a definition
         </p>
-        <button
-          onClick={handleAutoAssign}
-          disabled={assigning || unassignedDefinitions.length === 0 || unassignedTeams.length === 0}
-          className="bg-violet hover:bg-violet-dark text-white text-sm font-medium px-4 py-2 rounded-md disabled:opacity-50"
-        >
-          {assigning ? "Assigning…" : "Auto-assign remaining"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleClearAllUnassigned}
+            disabled={clearing || unassignedDefinitions.length === 0}
+            className="text-danger text-sm font-medium border border-danger/30 hover:bg-danger/10 px-3 py-2 rounded-md disabled:opacity-50"
+          >
+            {clearing ? "Clearing…" : "Delete all unassigned"}
+          </button>
+          <button
+            onClick={handleAutoAssign}
+            disabled={assigning || unassignedDefinitions.length === 0 || unassignedTeams.length === 0}
+            className="bg-violet hover:bg-violet-dark text-white text-sm font-medium px-4 py-2 rounded-md disabled:opacity-50"
+          >
+            {assigning ? "Assigning…" : "Auto-assign remaining"}
+          </button>
+        </div>
       </div>
 
       {error && <p className="text-sm text-danger">{error}</p>}
