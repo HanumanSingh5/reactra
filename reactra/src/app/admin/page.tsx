@@ -853,29 +853,37 @@ function DefinitionsTab() {
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-      const texts: string[] = [];
+      const entries: { title: string; description: string }[] = [];
       for (const row of rows) {
-        const cell = row?.[0];
-        if (typeof cell !== "string") continue;
-        const trimmed = cell.trim();
-        if (!trimmed) continue;
-        // skip an obvious header row like "Definition" / "Title" / "Problem Statement"
-        if (texts.length === 0 && /^(definition|title|project( title)?|problem statement)s?$/i.test(trimmed)) {
+        const titleCell = row?.[0];
+        const descCell = row?.[1];
+        if (typeof titleCell !== "string") continue;
+        const title = titleCell.trim();
+        if (!title) continue;
+        // skip an obvious header row like "Title" / "Definition" / "Problem Statement"
+        if (
+          entries.length === 0 &&
+          /^(definition|title|project( title)?|problem statement)s?$/i.test(title)
+        ) {
           continue;
         }
-        texts.push(trimmed);
+        const description = typeof descCell === "string" ? descCell.trim() : "";
+        entries.push({ title, description });
       }
 
-      if (texts.length === 0) {
-        setError("No definitions found in that file. Put one definition per row in the first column.");
+      if (entries.length === 0) {
+        setError(
+          "No definitions found in that file. Put the title in column A and the description in column B, one definition per row."
+        );
         return;
       }
 
       const batch = writeBatch(db);
-      for (const text of texts) {
+      for (const entry of entries) {
         const ref = doc(collection(db, "definitions"));
         batch.set(ref, {
-          text,
+          title: entry.title,
+          description: entry.description,
           assignedTeamId: null,
           assignedTeamName: null,
           createdAt: Date.now(),
@@ -913,7 +921,8 @@ function DefinitionsTab() {
         });
         batch.update(doc(db, "teams", team.id), {
           definitionId: def.id,
-          definitionText: def.text,
+          definitionTitle: def.title,
+          definitionDescription: def.description,
         });
       }
       await batch.commit();
@@ -933,7 +942,8 @@ function DefinitionsTab() {
       if (def.assignedTeamId) {
         batch.update(doc(db, "teams", def.assignedTeamId), {
           definitionId: deleteField(),
-          definitionText: deleteField(),
+          definitionTitle: deleteField(),
+          definitionDescription: deleteField(),
         });
       }
 
@@ -953,7 +963,8 @@ function DefinitionsTab() {
         });
         batch.update(doc(db, "teams", newTeamId), {
           definitionId: def.id,
-          definitionText: def.text,
+          definitionTitle: def.title,
+          definitionDescription: def.description,
         });
       } else {
         batch.update(doc(db, "definitions", def.id), {
@@ -978,10 +989,11 @@ function DefinitionsTab() {
       <div>
         <h2 className="font-semibold mb-1">Project definitions</h2>
         <p className="text-sm text-muted">
-          Upload an Excel file with one definition per row (first column). Then use
-          &quot;Auto-assign&quot; to randomly hand each team a unique definition &mdash;
-          no two teams will ever get the same one. Students see their assigned
-          definition on their Team page once it&apos;s set.
+          Upload an Excel file with the title in column A and the description in
+          column B, one definition per row. Then use &quot;Auto-assign&quot; to
+          randomly hand each team a unique definition &mdash; no two teams will
+          ever get the same one. Students see the full title and description on
+          their Team page once it&apos;s set.
         </p>
       </div>
 
@@ -1022,7 +1034,12 @@ function DefinitionsTab() {
               key={def.id}
               className="bg-card border border-border rounded-lg p-4 flex items-start justify-between gap-3 flex-wrap"
             >
-              <p className="text-sm flex-1 min-w-[220px]">{def.text}</p>
+              <div className="flex-1 min-w-[220px]">
+                <p className="text-sm font-medium">{def.title}</p>
+                {def.description && (
+                  <p className="text-xs text-muted mt-0.5">{def.description}</p>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <select
                   value={def.assignedTeamId ?? ""}
