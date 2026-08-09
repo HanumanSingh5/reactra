@@ -38,6 +38,7 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.auth.uid == userId;
       // Only admins can change someone's role after creation.
       allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
     }
 
     // ---------------- announcements ----------------
@@ -73,7 +74,7 @@ service cloud.firestore {
       allow create: if isEvaluator()
         && request.resource.data.evaluatorId == request.auth.uid
         && isAssignedEvaluator(request.resource.data.teamId);
-      allow update, delete: if isEvaluator() && resource.data.evaluatorId == request.auth.uid;
+      allow update, delete: if (isEvaluator() && resource.data.evaluatorId == request.auth.uid) || isAdmin();
     }
 
     // ---------------- eventConfig ----------------

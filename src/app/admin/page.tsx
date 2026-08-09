@@ -7,11 +7,13 @@ import {
   deleteDoc,
   deleteField,
   doc,
+  getDocs,
   onSnapshot,
   orderBy,
   query,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
@@ -364,12 +366,14 @@ function SeatingTab() {
   );
 }
 
-// ---------------- Users: promote/demote roles ----------------
+// ---------------- Users: promote/demote roles, delete users ----------------
 function UsersTab() {
   const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<AppUser[]>([]);
   const [search, setSearch] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "users"), (snap) => {
@@ -384,6 +388,77 @@ function UsersTab() {
       await updateDoc(doc(db, "users", uid), { role });
     } finally {
       setSavingId(null);
+    }
+  }
+
+  async function handleDelete(u: AppUser) {
+    setError("");
+
+    // Look up whether this student registered a team, so we can offer to
+    // remove it too rather than leaving an orphaned team behind.
+    let team: Team | null = null;
+    if (u.role === "student") {
+      const snap = await getDocs(query(collection(db, "teams"), where("createdBy", "==", u.uid)));
+      if (!snap.empty) {
+        const d = snap.docs[0];
+        team = { id: d.id, ...(d.data() as Omit<Team, "id">) };
+      }
+    }
+
+    let deleteTeamToo = false;
+    if (team) {
+      deleteTeamToo = window.confirm(
+        `${u.name} owns the team "${team.teamName}". Delete their team too ` +
+          `(including its scores, seating, and definition assignment)?\n\n` +
+          `Click OK to delete the team as well, or Cancel to only delete the user account and leave the team in place.`
+      );
+    } else {
+      const ok = window.confirm(`Delete ${u.name} (${u.email})? This removes their access and profile from Reactra.`);
+      if (!ok) return;
+    }
+
+    setDeletingId(u.uid);
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "users", u.uid));
+
+      if (team && deleteTeamToo) {
+        batch.delete(doc(db, "teams", team.id));
+
+        const scoresSnap = await getDocs(query(collection(db, "scores"), where("teamId", "==", team.id)));
+        scoresSnap.forEach((s) => batch.delete(s.ref));
+
+        const seatingSnap = await getDocs(query(collection(db, "seating"), where("teamId", "==", team.id)));
+        seatingSnap.forEach((s) => batch.delete(s.ref));
+
+        // Free up their assigned definition so it can be handed to another team.
+        if (team.definitionId) {
+          batch.update(doc(db, "definitions", team.definitionId), {
+            assignedTeamId: null,
+            assignedTeamName: null,
+          });
+        }
+      }
+
+      // If they were an evaluator, drop them from every team's assignment list
+      // so no team is left pointing at a deleted evaluator.
+      if (u.role === "evaluator") {
+        const teamsSnap = await getDocs(collection(db, "teams"));
+        teamsSnap.forEach((t) => {
+          const ids: string[] = t.data().assignedEvaluatorIds ?? [];
+          if (ids.includes(u.uid)) {
+            batch.update(t.ref, { assignedEvaluatorIds: ids.filter((id) => id !== u.uid) });
+          }
+        });
+        // Their already-submitted scores are left intact on purpose — deleting
+        // them would silently change teams' results after the fact.
+      }
+
+      await batch.commit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete user.");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -410,12 +485,24 @@ function UsersTab() {
         </p>
       </div>
 
+      <div className="bg-amber/10 border border-amber/30 text-amber text-xs rounded-md p-3">
+        <strong>Note:</strong> Deleting a user here removes their profile (and,
+        optionally, their team) from Reactra immediately. It does <em>not</em>{" "}
+        delete their login credential from Firebase Authentication — for that,
+        also go to Firebase Console → Authentication → Users → find them →{" "}
+        <strong>⋮ → Delete account</strong>. Otherwise they could technically
+        still log in, but will be blocked from every page since their profile
+        is gone.
+      </div>
+
       <input
         placeholder="Search by name or email…"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="w-full px-3 py-2 rounded-md border border-border text-sm"
       />
+
+      {error && <p className="text-sm text-danger">{error}</p>}
 
       {filtered.length === 0 && (
         <p className="text-sm text-muted">No matching users.</p>
@@ -450,6 +537,15 @@ function UsersTab() {
                 <option value="evaluator">Evaluator</option>
                 <option value="admin">Admin</option>
               </select>
+              {currentUser?.uid !== u.uid && (
+                <button
+                  onClick={() => handleDelete(u)}
+                  disabled={deletingId === u.uid}
+                  className="text-xs text-danger border border-danger/30 hover:bg-danger/10 px-2.5 py-1.5 rounded-md disabled:opacity-50"
+                >
+                  {deletingId === u.uid ? "Deleting…" : "Delete"}
+                </button>
+              )}
             </div>
           </div>
         ))}
