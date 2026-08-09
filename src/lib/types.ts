@@ -24,6 +24,7 @@ export interface Team {
   round1Status: Round1Status;
   pptUrl?: string;
   docUrl?: string;
+  assignedEvaluatorIds?: string[]; // uids of evaluators the admin assigned to judge this team
   createdAt: number;
 }
 

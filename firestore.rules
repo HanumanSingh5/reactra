@@ -24,6 +24,14 @@ service cloud.firestore {
       return isSignedIn() && role() == "evaluator";
     }
 
+    // True if the caller is an evaluator assigned to judge this specific team.
+    function isAssignedEvaluator(teamId) {
+      let team = get(/databases/$(database)/documents/teams/$(teamId)).data;
+      return "assignedEvaluatorIds" in team &&
+        team.assignedEvaluatorIds is list &&
+        team.assignedEvaluatorIds.hasAny([request.auth.uid]);
+    }
+
     // ---------------- users ----------------
     match /users/{userId} {
       allow read: if isSignedIn();
@@ -52,7 +60,9 @@ service cloud.firestore {
     // ---------------- scores ----------------
     match /scores/{id} {
       allow read: if isSignedIn();
-      allow create: if isEvaluator() && request.resource.data.evaluatorId == request.auth.uid;
+      allow create: if isEvaluator()
+        && request.resource.data.evaluatorId == request.auth.uid
+        && isAssignedEvaluator(request.resource.data.teamId);
       allow update, delete: if isEvaluator() && resource.data.evaluatorId == request.auth.uid;
     }
 

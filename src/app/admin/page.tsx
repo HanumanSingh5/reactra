@@ -17,7 +17,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import StatusPill from "@/components/StatusPill";
 import { Announcement, AppUser, EventConfig, Role, Round1Status, SeatAssignment, Team } from "@/lib/types";
 
-type Tab = "announcements" | "rounds" | "teams" | "seating" | "users";
+type Tab = "announcements" | "rounds" | "teams" | "seating" | "users" | "assignments" | "signsheet";
 
 function AdminPageContent() {
   const { user } = useAuth();
@@ -35,6 +35,8 @@ function AdminPageContent() {
           ["teams", "Teams"],
           ["seating", "Seating"],
           ["users", "Users"],
+          ["assignments", "Evaluator Assignments"],
+          ["signsheet", "Sign Sheet"],
         ] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
@@ -53,6 +55,8 @@ function AdminPageContent() {
       {tab === "teams" && <TeamsTab />}
       {tab === "seating" && <SeatingTab />}
       {tab === "users" && <UsersTab />}
+      {tab === "assignments" && <AssignmentsTab />}
+      {tab === "signsheet" && <SignSheetTab />}
     </div>
   );
 }
@@ -427,6 +431,216 @@ function UsersTab() {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- Evaluator assignments ----------------
+function AssignmentsTab() {
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [evaluators, setEvaluators] = useState<AppUser[]>([]);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "teams"), (snap) => {
+      setTeams(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Team, "id">) })));
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "users"), (snap) => {
+      setEvaluators(
+        snap.docs
+          .map((d) => ({ uid: d.id, ...(d.data() as Omit<AppUser, "uid">) }))
+          .filter((u) => u.role === "evaluator")
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+    });
+    return () => unsub();
+  }, []);
+
+  async function toggleAssignment(team: Team, evaluatorUid: string) {
+    const key = `${team.id}:${evaluatorUid}`;
+    setSavingKey(key);
+    const current = team.assignedEvaluatorIds ?? [];
+    const next = current.includes(evaluatorUid)
+      ? current.filter((id) => id !== evaluatorUid)
+      : [...current, evaluatorUid];
+    try {
+      await updateDoc(doc(db, "teams", team.id), { assignedEvaluatorIds: next });
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="font-semibold mb-1">Assign evaluators to teams</h2>
+        <p className="text-sm text-muted">
+          Check which evaluators are allowed to judge each team. Evaluators only see
+          teams assigned to them on the Evaluate page &mdash; this is enforced by the
+          database rules, not just hidden in the UI.
+        </p>
+      </div>
+
+      {evaluators.length === 0 && (
+        <p className="text-sm text-muted border border-dashed border-border rounded-lg p-4">
+          No evaluator accounts yet. Promote a teacher to &quot;Evaluator&quot; on the
+          Users tab first.
+        </p>
+      )}
+
+      {teams.length === 0 && (
+        <p className="text-sm text-muted">No teams registered yet.</p>
+      )}
+
+      <div className="space-y-3">
+        {teams.map((team) => (
+          <div key={team.id} className="bg-card border border-border rounded-lg p-4">
+            <p className="font-medium mb-3">{team.teamName}</p>
+            <div className="flex flex-wrap gap-2">
+              {evaluators.map((ev) => {
+                const key = `${team.id}:${ev.uid}`;
+                const checked = (team.assignedEvaluatorIds ?? []).includes(ev.uid);
+                return (
+                  <button
+                    key={ev.uid}
+                    disabled={savingKey === key}
+                    onClick={() => toggleAssignment(team, ev.uid)}
+                    className={`text-sm px-3 py-1.5 rounded-full border transition-colors disabled:opacity-50 ${
+                      checked
+                        ? "bg-violet text-white border-violet"
+                        : "border-border text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {checked ? "✓ " : ""}
+                    {ev.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------- Sign sheet download ----------------
+function csvEscape(value: string) {
+  if (/[",\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function SignSheetTab() {
+  const [teams, setTeams] = useState<Team[]>([]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "teams"), (snap) => {
+      setTeams(
+        snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as Omit<Team, "id">) }))
+          .sort((a, b) => a.teamName.localeCompare(b.teamName))
+      );
+    });
+    return () => unsub();
+  }, []);
+
+  const totalMembers = teams.reduce((sum, t) => sum + t.members.length, 0);
+
+  function handleDownload() {
+    const rows: string[] = [];
+    rows.push(["Sr. No.", "Team", "Enrollment", "Name", "Class-Division", "Sign"].join(","));
+
+    let srNo = 1;
+    for (const team of teams) {
+      for (const member of team.members) {
+        rows.push(
+          [
+            String(srNo),
+            csvEscape(team.teamName),
+            csvEscape(member.enrollment),
+            csvEscape(member.name),
+            csvEscape(member.classDivision),
+            "", // blank column for physical signature
+          ].join(",")
+        );
+        srNo++;
+      }
+    }
+
+    const csv = rows.join("\r\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reactra-sign-sheet-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="font-semibold mb-1">Team sign sheet</h2>
+        <p className="text-sm text-muted">
+          Downloads a CSV with every registered member across all teams, with a blank
+          &quot;Sign&quot; column for physical check-in on event day. Open it in Excel
+          or Google Sheets to print.
+        </p>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-5 flex items-center justify-between flex-wrap gap-3">
+        <p className="text-sm text-muted">
+          {teams.length} team(s), {totalMembers} member(s) total.
+        </p>
+        <button
+          onClick={handleDownload}
+          disabled={totalMembers === 0}
+          className="bg-violet hover:bg-violet-dark text-white text-sm font-medium px-4 py-2 rounded-md disabled:opacity-50"
+        >
+          Download CSV
+        </button>
+      </div>
+
+      <div className="border border-border rounded-lg overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-card">
+            <tr className="text-left text-muted">
+              <th className="px-3 py-2 font-medium">Sr. No.</th>
+              <th className="px-3 py-2 font-medium">Team</th>
+              <th className="px-3 py-2 font-medium">Enrollment</th>
+              <th className="px-3 py-2 font-medium">Name</th>
+              <th className="px-3 py-2 font-medium">Class-Division</th>
+              <th className="px-3 py-2 font-medium">Sign</th>
+            </tr>
+          </thead>
+          <tbody>
+            {teams.flatMap((team, ti) =>
+              team.members.map((m, mi) => {
+                const srNo =
+                  teams.slice(0, ti).reduce((sum, t) => sum + t.members.length, 0) + mi + 1;
+                return (
+                  <tr key={`${team.id}-${mi}`} className="border-t border-border">
+                    <td className="px-3 py-2">{srNo}</td>
+                    <td className="px-3 py-2">{team.teamName}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{m.enrollment}</td>
+                    <td className="px-3 py-2">{m.name}</td>
+                    <td className="px-3 py-2">{m.classDivision}</td>
+                    <td className="px-3 py-2 text-muted">&nbsp;</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

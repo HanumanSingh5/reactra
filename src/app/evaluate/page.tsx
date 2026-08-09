@@ -134,7 +134,13 @@ function EvaluatePageContent() {
     return () => unsub();
   }, []);
 
-  const visibleTeams = round === 2 ? teams.filter((t) => t.round1Status === "qualified") : teams;
+  const assignedTeams = teams.filter((t) =>
+    user ? (t.assignedEvaluatorIds ?? []).includes(user.uid) : false
+  );
+  const visibleTeams =
+    round === 2
+      ? assignedTeams.filter((t) => t.round1Status === "qualified")
+      : assignedTeams;
 
   if (loading) {
     return <div className="max-w-4xl mx-auto px-5 py-16 text-muted">Loading…</div>;
@@ -163,7 +169,13 @@ function EvaluatePageContent() {
 
       {visibleTeams.length === 0 && (
         <div className="border border-dashed border-border rounded-lg p-8 text-center text-muted text-sm">
-          {round === 2 ? "No teams have qualified for Round 2 yet." : "No teams registered yet."}
+          {teams.length === 0
+            ? "No teams registered yet."
+            : assignedTeams.length === 0
+            ? "You haven't been assigned any teams yet. Ask the admin to assign you on the Evaluator Assignments tab."
+            : round === 2
+            ? "None of your assigned teams have qualified for Round 2 yet."
+            : "No assigned teams to show."}
         </div>
       )}
 
