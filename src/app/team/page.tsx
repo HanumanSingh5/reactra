@@ -229,8 +229,13 @@ function TeamPageContent() {
 
       <section className="bg-card border border-border rounded-lg p-5">
         <h2 className="font-semibold mb-3">Project definition</h2>
-        {team.definitionText ? (
-          <p className="text-sm leading-relaxed">{team.definitionText}</p>
+        {team.definitionTitle ? (
+          <div>
+            <p className="font-medium text-violet mb-1">{team.definitionTitle}</p>
+            <p className="text-sm leading-relaxed text-foreground/80">
+              {team.definitionDescription}
+            </p>
+          </div>
         ) : (
           <p className="text-sm text-muted italic">
             Not assigned yet. Check back once the admin has assigned your team a
