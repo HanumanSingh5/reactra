@@ -15,9 +15,9 @@ import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import StatusPill from "@/components/StatusPill";
-import { Announcement, EventConfig, Round1Status, SeatAssignment, Team } from "@/lib/types";
+import { Announcement, AppUser, EventConfig, Role, Round1Status, SeatAssignment, Team } from "@/lib/types";
 
-type Tab = "announcements" | "rounds" | "teams" | "seating";
+type Tab = "announcements" | "rounds" | "teams" | "seating" | "users";
 
 function AdminPageContent() {
   const { user } = useAuth();
@@ -34,6 +34,7 @@ function AdminPageContent() {
           ["rounds", "Round Controls"],
           ["teams", "Teams"],
           ["seating", "Seating"],
+          ["users", "Users"],
         ] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
@@ -51,6 +52,7 @@ function AdminPageContent() {
       {tab === "rounds" && <RoundControlsTab />}
       {tab === "teams" && <TeamsTab />}
       {tab === "seating" && <SeatingTab />}
+      {tab === "users" && <UsersTab />}
     </div>
   );
 }
@@ -331,6 +333,100 @@ function SeatingTab() {
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- Users: promote/demote roles ----------------
+function UsersTab() {
+  const { user: currentUser } = useAuth();
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [search, setSearch] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "users"), (snap) => {
+      setUsers(snap.docs.map((d) => ({ uid: d.id, ...(d.data() as Omit<AppUser, "uid">) })));
+    });
+    return () => unsub();
+  }, []);
+
+  async function setRole(uid: string, role: Role) {
+    setSavingId(uid);
+    try {
+      await updateDoc(doc(db, "users", uid), { role });
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  const filtered = users
+    .filter((u) =>
+      (u.name + u.email).toLowerCase().includes(search.trim().toLowerCase())
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const roleBadge: Record<Role, string> = {
+    student: "bg-border text-muted",
+    evaluator: "bg-violet/15 text-violet",
+    admin: "bg-success/15 text-success",
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="font-semibold mb-1">Manage user roles</h2>
+        <p className="text-sm text-muted">
+          Everyone signs up as a Student. Promote teachers to Evaluator so they can
+          score teams, or to Admin for full access. Changes apply the moment they
+          next refresh the site.
+        </p>
+      </div>
+
+      <input
+        placeholder="Search by name or email…"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="w-full px-3 py-2 rounded-md border border-border text-sm"
+      />
+
+      {filtered.length === 0 && (
+        <p className="text-sm text-muted">No matching users.</p>
+      )}
+
+      <div className="space-y-2">
+        {filtered.map((u) => (
+          <div
+            key={u.uid}
+            className="bg-card border border-border rounded-lg p-4 flex items-center justify-between flex-wrap gap-3"
+          >
+            <div>
+              <p className="font-medium">
+                {u.name}
+                {currentUser?.uid === u.uid && (
+                  <span className="text-xs text-muted font-normal"> (you)</span>
+                )}
+              </p>
+              <p className="text-xs text-muted">{u.email}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs font-medium px-2 py-1 rounded-full ${roleBadge[u.role]}`}>
+                {u.role}
+              </span>
+              <select
+                value={u.role}
+                disabled={savingId === u.uid}
+                onChange={(e) => setRole(u.uid, e.target.value as Role)}
+                className="text-sm border border-border rounded-md px-2 py-1 disabled:opacity-50"
+              >
+                <option value="student">Student</option>
+                <option value="evaluator">Evaluator</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
