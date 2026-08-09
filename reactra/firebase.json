@@ -1,0 +1,9 @@
+{
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "storage": {
+    "bucket": "reactra-a1b5a.firebasestorage.app",
+    "rules": "storage.rules"
+  }
+}
