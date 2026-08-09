@@ -4,20 +4,40 @@ import { useEffect, useState } from "react";
 import {
   addDoc,
   collection,
+  deleteDoc,
+  deleteField,
   doc,
   onSnapshot,
   orderBy,
   query,
   setDoc,
   updateDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import StatusPill from "@/components/StatusPill";
-import { Announcement, AppUser, EventConfig, Role, Round1Status, SeatAssignment, Team } from "@/lib/types";
+import {
+  Announcement,
+  AppUser,
+  Definition,
+  EventConfig,
+  Role,
+  Round1Status,
+  SeatAssignment,
+  Team,
+} from "@/lib/types";
 
-type Tab = "announcements" | "rounds" | "teams" | "seating" | "users" | "assignments" | "signsheet";
+type Tab =
+  | "announcements"
+  | "rounds"
+  | "teams"
+  | "seating"
+  | "users"
+  | "assignments"
+  | "signsheet"
+  | "definitions";
 
 function AdminPageContent() {
   const { user } = useAuth();
@@ -37,6 +57,7 @@ function AdminPageContent() {
           ["users", "Users"],
           ["assignments", "Evaluator Assignments"],
           ["signsheet", "Sign Sheet"],
+          ["definitions", "Definitions"],
         ] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
@@ -57,6 +78,7 @@ function AdminPageContent() {
       {tab === "users" && <UsersTab />}
       {tab === "assignments" && <AssignmentsTab />}
       {tab === "signsheet" && <SignSheetTab />}
+      {tab === "definitions" && <DefinitionsTab />}
     </div>
   );
 }
@@ -642,6 +664,244 @@ function SignSheetTab() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ---------------- Project definitions ----------------
+function DefinitionsTab() {
+  const [definitions, setDefinitions] = useState<Definition[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "definitions"), orderBy("createdAt", "asc")),
+      (snap) => {
+        setDefinitions(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Definition, "id">) })));
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "teams"), (snap) => {
+      setTeams(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Team, "id">) })));
+    });
+    return () => unsub();
+  }, []);
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setUploading(true);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+      const texts: string[] = [];
+      for (const row of rows) {
+        const cell = row?.[0];
+        if (typeof cell !== "string") continue;
+        const trimmed = cell.trim();
+        if (!trimmed) continue;
+        // skip an obvious header row like "Definition" / "Title" / "Problem Statement"
+        if (texts.length === 0 && /^(definition|title|project( title)?|problem statement)s?$/i.test(trimmed)) {
+          continue;
+        }
+        texts.push(trimmed);
+      }
+
+      if (texts.length === 0) {
+        setError("No definitions found in that file. Put one definition per row in the first column.");
+        return;
+      }
+
+      const batch = writeBatch(db);
+      for (const text of texts) {
+        const ref = doc(collection(db, "definitions"));
+        batch.set(ref, {
+          text,
+          assignedTeamId: null,
+          assignedTeamName: null,
+          createdAt: Date.now(),
+        });
+      }
+      await batch.commit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to read that file.");
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  }
+
+  const unassignedDefinitions = definitions.filter((d) => !d.assignedTeamId);
+  const unassignedTeams = teams.filter((t) => !t.definitionId);
+
+  async function handleAutoAssign() {
+    if (unassignedDefinitions.length === 0 || unassignedTeams.length === 0) return;
+    setAssigning(true);
+    setError("");
+    try {
+      // Shuffle so assignment order isn't predictable, then pair 1:1 —
+      // each definition can only end up on exactly one team.
+      const shuffled = [...unassignedDefinitions].sort(() => Math.random() - 0.5);
+      const pairCount = Math.min(shuffled.length, unassignedTeams.length);
+
+      const batch = writeBatch(db);
+      for (let i = 0; i < pairCount; i++) {
+        const def = shuffled[i];
+        const team = unassignedTeams[i];
+        batch.update(doc(db, "definitions", def.id), {
+          assignedTeamId: team.id,
+          assignedTeamName: team.teamName,
+        });
+        batch.update(doc(db, "teams", team.id), {
+          definitionId: def.id,
+          definitionText: def.text,
+        });
+      }
+      await batch.commit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Auto-assign failed.");
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  async function handleReassign(def: Definition, newTeamId: string) {
+    setError("");
+    try {
+      const batch = writeBatch(db);
+
+      // Free up whatever team currently holds this definition.
+      if (def.assignedTeamId) {
+        batch.update(doc(db, "teams", def.assignedTeamId), {
+          definitionId: deleteField(),
+          definitionText: deleteField(),
+        });
+      }
+
+      if (newTeamId) {
+        const newTeam = teams.find((t) => t.id === newTeamId);
+        // If the target team already had a different definition, free that one up too —
+        // this is what guarantees no two teams ever end up sharing one.
+        if (newTeam?.definitionId && newTeam.definitionId !== def.id) {
+          batch.update(doc(db, "definitions", newTeam.definitionId), {
+            assignedTeamId: null,
+            assignedTeamName: null,
+          });
+        }
+        batch.update(doc(db, "definitions", def.id), {
+          assignedTeamId: newTeamId,
+          assignedTeamName: newTeam?.teamName ?? null,
+        });
+        batch.update(doc(db, "teams", newTeamId), {
+          definitionId: def.id,
+          definitionText: def.text,
+        });
+      } else {
+        batch.update(doc(db, "definitions", def.id), {
+          assignedTeamId: null,
+          assignedTeamName: null,
+        });
+      }
+
+      await batch.commit();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reassign failed.");
+    }
+  }
+
+  async function handleDelete(def: Definition) {
+    if (def.assignedTeamId) return; // safety: don't delete one that's in use
+    await deleteDoc(doc(db, "definitions", def.id));
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-semibold mb-1">Project definitions</h2>
+        <p className="text-sm text-muted">
+          Upload an Excel file with one definition per row (first column). Then use
+          &quot;Auto-assign&quot; to randomly hand each team a unique definition &mdash;
+          no two teams will ever get the same one. Students see their assigned
+          definition on their Team page once it&apos;s set.
+        </p>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-5 space-y-3">
+        <h3 className="font-medium text-sm">Upload definitions (.xlsx / .xls / .csv)</h3>
+        <input
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          onChange={handleFileUpload}
+          disabled={uploading}
+          className="text-sm"
+        />
+        {uploading && <p className="text-xs text-muted">Reading file…</p>}
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-5 flex items-center justify-between flex-wrap gap-3">
+        <p className="text-sm text-muted">
+          {unassignedDefinitions.length} unassigned definition(s) &middot;{" "}
+          {unassignedTeams.length} team(s) without a definition
+        </p>
+        <button
+          onClick={handleAutoAssign}
+          disabled={assigning || unassignedDefinitions.length === 0 || unassignedTeams.length === 0}
+          className="bg-violet hover:bg-violet-dark text-white text-sm font-medium px-4 py-2 rounded-md disabled:opacity-50"
+        >
+          {assigning ? "Assigning…" : "Auto-assign remaining"}
+        </button>
+      </div>
+
+      {error && <p className="text-sm text-danger">{error}</p>}
+
+      {definitions.length === 0 ? (
+        <p className="text-sm text-muted">No definitions uploaded yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {definitions.map((def) => (
+            <div
+              key={def.id}
+              className="bg-card border border-border rounded-lg p-4 flex items-start justify-between gap-3 flex-wrap"
+            >
+              <p className="text-sm flex-1 min-w-[220px]">{def.text}</p>
+              <div className="flex items-center gap-2">
+                <select
+                  value={def.assignedTeamId ?? ""}
+                  onChange={(e) => handleReassign(def, e.target.value)}
+                  className="text-sm border border-border rounded-md px-2 py-1"
+                >
+                  <option value="">Unassigned</option>
+                  {teams.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.teamName}
+                      {t.definitionId && t.definitionId !== def.id ? " (has one)" : ""}
+                    </option>
+                  ))}
+                </select>
+                {!def.assignedTeamId && (
+                  <button
+                    onClick={() => handleDelete(def)}
+                    className="text-xs text-danger px-2 py-1"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
